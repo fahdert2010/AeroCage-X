@@ -1,0 +1,10 @@
+2026-05-22 19:20:34 | [ERROR] | logger_vault.py:21 | فشل استجواب iw dev عتادياً: hostname contains invalid characters
+2026-05-22 19:25:45 | [ERROR] | logger_vault.py:21 | النواة البعيدة رفضت تمرير نفق airserv: ** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+ash: disown: not found
+2026-05-22 19:27:53 | [ERROR] | logger_vault.py:21 | النواة البعيدة رفضت تمرير نفق airserv: ** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+ash: disown: not found
+2026-05-22 23:47:20 | [ERROR] | logger_vault.py:21 | فشل استجواب ubus لشبكة الوايرلس: /bin/sh: 1: Syntax error: "(" unexpected
