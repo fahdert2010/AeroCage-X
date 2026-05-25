@@ -1,49 +1,61 @@
 #!/usr/bin/env python3
-from core.ui_base import G_OK, R_ERR, Y_WARN, D_DIV, RESET
+import os
+import sys
+import subprocess
+import tkinter as tk
+from tkinter import messagebox
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(BASE_DIR))
+
+from core.system_guard import SystemGuard
+from utils.channel_optimizer import ChannelOptimizer
+
+SystemGuard.enforce_root_privileges("OpenWrt Frequency Analyser Engine")
 
 class IntelFreqAnalyser:
-    @staticmethod
-    def process_and_draw_topology(current_aps, band_mode):
-        """الحساب الرياضي لنسب التشويش وإرجاع المعرف الصافي لأفضل منفذ حركي"""
-        valid_channels = [str(x) for x in range(1, 14)] if band_mode == "2G" else [str(x) for x in range(36, 166, 4)]
-        channel_weights = {ch: 0 for ch in valid_channels}
-        total_nets = len(current_aps)
+    def __init__(self, ap_ip: str, ap_password: str):
+        self.ap_ip = SystemGuard.sanitize_input(ap_ip, "interface")
+        self.ap_password = ap_password
 
-        for ap in current_aps.values():
-            ch = ap['channel']
-            if ch in channel_weights: channel_weights[ch] += 1
-
-        print(f"\n📊 [ تقرير كثافة وازدحام القنوات والنسبة المئوية للأثير المحيط حركياً - نطاق {band_mode} ]:")
-        print(f"{D_DIV}========================================================================================================={RESET}")
-        print(f" {'رقم القناة':<10} | {'عدد الشبكات عليها':<20} | {'النسبة المئوية':<15} | {'المخطط البياني والتوزيع الحركي'}")
-        print(f"{D_DIV}========================================================================================================={RESET}")
-
-        if total_nets == 0:
-            print(" 🚫 لم يتم العثور على أي شبكات جيران نشطة حالياً لتحليل قنواتها.")
-            print(f"{D_DIV}========================================================================================================={RESET}")
-            return "1" if band_mode == "2G" else "36"
-
-        best_channel = valid_channels[0] if valid_channels else "1"
-        min_weight = 99999
-
-        for ch in valid_channels:
-            count = channel_weights[ch]
-            percentage = int((count * 100) / total_nets) if total_nets > 0 else 0
-            bar = "█" * count
-            
-            if percentage > 30: COLOR = R_ERR
-            elif percentage > 15: COLOR = Y_WARN
-            else: COLOR = G_OK
-
-            print(f"{COLOR}  القناة [{ch:<2}]   | ({count:<2}) شبكات مشوشة      | {percentage:<3} %        | {bar}{RESET}")
-
-            if count < min_weight:
-                min_weight = count
-                best_channel = ch
-
-        print(f"{D_DIV}========================================================================================================={RESET}")
-        print(f"🏆 التوصية العتادية للمنظومة ➡️ أفضل قناة حرة وصافية حالياً هي القناة: [{best_channel}]")
-        print(f"{D_DIV}========================================================================================================={RESET}")
+    def scan_air_space_standard(self, ap_interface: str = "phy1-ap0") -> dict:
+        """تشغيل مسح الأجواء الطبيعي عن بعد واستدعاء الخوارزمية المنفصلة للتحليل"""
+        remote_cmd = f"iwinfo {clean_inf if hasattr(self, 'clean_inf') else SystemGuard.sanitize_input(ap_interface, 'interface')} scan"
+        base_ssh_args = ["sshpass", "-p", self.ap_password, "ssh", "-o", "StrictHostKeyChecking=no", f"root@{self.ap_ip}", remote_cmd]
         
-        # [قفل إصلاح العيب البرمجي]: إرجاع المتغير الصافي للملف الرئيسي
-        return best_channel
+        try:
+            result = subprocess.run(base_ssh_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False)
+            if result.returncode == 0 and result.stdout:
+                parsed_cells = ChannelOptimizer.parse_scan_output(result.stdout)
+                return ChannelOptimizer.calculate_best_channel(parsed_cells)
+        except Exception as e:
+            print(f"[-] خطأ مسح الأجواء العادي: {e}")
+        return {}
+
+    def switch_channel_with_confirmation(self, radio_name: str, target_channel: str) -> bool:
+        """🤖 خط الحماية الفولاذي: سؤال المستخدم وطلب التأكيد الإجباري قبل التغيير بالـ UCI"""
+        clean_radio = SystemGuard.sanitize_input(radio_name, "interface")
+        clean_chan = "".join(ch for ch in str(target_channel) if ch.isdigit())
+
+        root_box = tk.Tk()
+        root_box.withdraw()
+        user_response = messagebox.askyesno(
+            "تأكيد التعديل التكتيكي", 
+            f"هل تريد فعلاً تعديل تردد الراديو ({clean_radio}) وتثبيته على القناة الجديدة ({clean_chan})؟"
+        )
+        root_box.destroy()
+
+        if not user_response:
+            print("[*] تم إلغاء أمر التعديل بناءً على رغبة القائد.")
+            return False
+
+        # حزمة أوامر الـ UCI المتفق عليها في تجاربك الميدانية
+        uci_command = f"uci set wireless.{clean_radio}.channel='{clean_chan}' && uci commit wireless && wifi reload {clean_radio}"
+        base_ssh_args = ["sshpass", "-p", self.ap_password, "ssh", "-o", "StrictHostKeyChecking=no", f"root@{self.ap_ip}", uci_command]
+
+        try:
+            result = subprocess.run(base_ssh_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=False)
+            return result.returncode == 0
+        except Exception:
+            return False

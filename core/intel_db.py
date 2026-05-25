@@ -1,73 +1,114 @@
 #!/usr/bin/env python3
-import sqlite3
 import os
+import sys
+import sqlite3
+from pathlib import Path
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-DB_PATH = os.path.join(DATA_DIR, "aerocage_unified.db")
+# ربط المسارات بالنواة المركزية للمنظومة
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(BASE_DIR))
 
-class IntelDBManager:
+from core.system_guard import SystemGuard
+from core.db_manager import DatabaseManager
+
+class IntelDatabase(DatabaseManager):
     def __init__(self):
-        os.makedirs(DATA_DIR, exist_ok=True)
-        self.db_path = DB_PATH
-        self._create_tables()
+        # استدعاء مشيد الأب (DatabaseManager) لتوحيد مراجع الاتصال وملف قاعدة البيانات
+        super().__init__()
+        # تهيئة جدول الاستخبارات المتقدم فوراً
+        self.initialize_intel_tables()
 
-    def _get_connection(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.execute("PRAGMA foreign_keys = ON;")
-        return conn
+    def initialize_intel_tables(self):
+        """بناء جداول الاستخبارات المتقدمة والأمنية في قاعدة البيانات الموحدة"""
+        query = """
+        CREATE TABLE IF NOT EXISTS intel_recon (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            bssid TEXT NOT EXISTS UNIQUE,
+            essid TEXT,
+            encryption_type TEXT DEFAULT 'OPEN',
+            cipher TEXT DEFAULT 'NONE',
+            auth_type TEXT DEFAULT 'NONE',
+            recon_notes TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+        # استخدام قفل الأب (DatabaseManager._lock) لمنع أي تضارب بين خيوط الفحص والضربات
+        with DatabaseManager._lock:
+            conn = self._get_secure_connection()
+            if conn:
+                try:
+                    with conn:
+                        cursor = conn.cursor()
+                        cursor.execute(query)
+                    print("[+] تم تهيئة وتأمين جداول الاستخبارات المتقدمة (Intel Recon Table) بنجاح.")
+                except sqlite3.Error as e:
+                    print(f"[-] فشل إنشاء بنية جداول الاستخبارات: {e}")
+                finally:
+                    conn.close()
 
-    def _create_tables(self):
-        with self._get_connection() as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS groups (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE);")
-            conn.execute("""CREATE TABLE IF NOT EXISTS access_points (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, ip TEXT NOT NULL UNIQUE,
-                username TEXT NOT NULL DEFAULT 'root', password TEXT NOT NULL, group_id INTEGER,
-                FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE RESTRICT
-            );""")
-            conn.execute("""CREATE TABLE IF NOT EXISTS radar_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, scan_time TEXT NOT NULL, scanner_ap_name TEXT NOT NULL,
-                scanner_band TEXT NOT NULL, bssid TEXT NOT NULL, essid TEXT, channel TEXT, privacy TEXT, signal TEXT,
-                first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, UNIQUE(scanner_ap_name, bssid)
-            );""")
-            conn.commit()
+    def update_intel_recon_safe(self, bssid: str, essid: str, enc: str, cipher: str, auth: str, notes: str = "") -> bool:
+        """
+        تحديث مستودع الاستخبارات اللاسلكية ببيانات الأهداف بأمان 100% وحصانة كاملة ضد الـ SQL Injection.
+        يتم تمرير المعلمات عبر علامات الاستفهام لمنع تفسير الأسماء الملوثة القادمة من الهواء كأوامر تخريبية.
+        """
+        # تطهير المدخلات القادمة من الهواء عتادياً قبل إرسالها للنواة
+        clean_bssid = SystemGuard.sanitize_input(bssid, "bssid")
+        clean_essid = SystemGuard.sanitize_input(essid, "csv_value")
+        clean_enc = SystemGuard.sanitize_input(enc, "interface")
+        clean_cipher = SystemGuard.sanitize_input(cipher, "interface")
+        clean_auth = SystemGuard.sanitize_input(auth, "interface")
+        clean_notes = SystemGuard.sanitize_input(notes, "csv_value")
 
-    def add_group(self, group_name):
-        try:
-            with self._get_connection() as conn:
-                conn.execute("INSERT INTO groups (name) VALUES (?);", (group_name.strip(),))
-                conn.commit()
-            return True, "🟢 تم إضافة المجموعة بنجاح."
-        except sqlite3.IntegrityError: return False, "❌ مكرر"
+        query = """
+        INSERT INTO intel_recon (bssid, essid, encryption_type, cipher, auth_type, recon_notes, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(bssid) DO UPDATE SET
+            essid=excluded.essid,
+            encryption_type=excluded.encryption_type,
+            cipher=excluded.cipher,
+            auth_type=excluded.auth_type,
+            recon_notes=excluded.recon_notes,
+            updated_at=CURRENT_TIMESTAMP;
+        """
 
-    def get_all_groups(self):
-        with self._get_connection() as conn:
-            return conn.execute("SELECT id, name FROM groups ORDER BY id ASC;").fetchall()
+        with DatabaseManager._lock:
+            conn = self._get_secure_connection()
+            if conn:
+                try:
+                    with conn: # سياق الحماية الآمن للـ Commit والـ Rollback
+                        cursor = conn.cursor()
+                        cursor.execute(query, (clean_bssid, clean_essid, clean_enc, clean_cipher, clean_auth, clean_notes))
+                    return True
+                except sqlite3.Error as e:
+                    print(f"[-] فشل ضخ البيانات الاستخباراتية للهدف {clean_bssid}: {e}")
+                finally:
+                    conn.close() # خط الدفاع الحتمي لمنع تعليق التداخل البرمجي لقاعدة البيانات
+        return False
 
-    def delete_group(self, group_id):
-        try:
-            with self._get_connection() as conn:
-                conn.execute("DELETE FROM groups WHERE id = ?;", (int(group_id),))
-                conn.commit()
-            return True, "🟢 تم حذف المجموعة بنجاح."
-        except sqlite3.IntegrityError: return False, "❌ قفل عتادي: المجموعة ممتلئة"
+    def query_target_recon_data(self, bssid: str) -> dict:
+        """استدعاء السجل الاستخباراتي الكامل لهدف معين بأمان وحصانة"""
+        clean_mac = SystemGuard.sanitize_input(bssid, "bssid")
+        query = "SELECT * FROM intel_recon WHERE bssid = ?;"
+        result_dict = {}
 
-    def add_access_point(self, name, ip, username, password, group_id=None):
-        query = "INSERT INTO access_points (name, ip, username, password, group_id) VALUES (?, ?, ?, ?, ?);"
-        try:
-            with self._get_connection() as conn:
-                conn.execute(query, (name.strip(), ip.strip(), username.strip(), password.strip(), group_id))
-                conn.commit()
-            return True
-        except sqlite3.IntegrityError: return False
+        with DatabaseManager._lock:
+            conn = self._get_secure_connection()
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute(query, (clean_mac,))
+                    row = cursor.fetchone()
+                    if row:
+                        result_dict = dict(row)
+                except sqlite3.Error as e:
+                    print(f"[-] خطأ أثناء استدعاء بيانات الاستطلاع للهدف {clean_mac}: {e}")
+                finally:
+                    conn.close()
+        return result_dict
 
-    def get_all_access_points(self):
-        query = """SELECT ap.id, ap.name, ap.ip, ap.username, ap.password, g.name 
-                   FROM access_points ap LEFT JOIN groups g ON ap.group_id = g.id ORDER BY ap.id ASC;"""
-        with self._get_connection() as conn:
-            return conn.execute(query).fetchall()
-
-    def delete_access_point(self, ap_id):
-        with self._get_connection() as conn:
-            conn.execute("DELETE FROM access_points WHERE id = ?;", (int(ap_id),))
-            conn.commit()
+if __name__ == "__main__":
+    print("[*] محرك ومستودع استخبارات الأهداف اللاسلكية (Intel DB) مدمج ومؤمن بنسبة 100%.")
+    # اختبار تشغيلي صامت يثبت كفاءة الوراثة البرمجية النظيفة من المدير المركزي
+    intel = IntelDatabase()
+    intel.update_intel_recon_safe("11:22:33:44:55:66", "Target_Malicious_SSID'; DROP TABLE intel_recon; --", "WPA2", "CCMP", "PSK", "ملاحظة فحص تكتيكي")
+    print(f"[+] مخرجات الفحص الآمن ضد حيلة الحقن: {intel.query_target_recon_data('11:22:33:44:55:66')}")

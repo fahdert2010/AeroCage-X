@@ -1,50 +1,62 @@
 #!/usr/bin/env python3
-import os, csv, subprocess, time
+import os
+import sys
+import subprocess
+from pathlib import Path
 
-class M3KaliPipeline:
-    @staticmethod
-    def start_recon_stream(ap_name, band, channel, socket):
-        """بناء المجلد الشجري العسكري باسم الأكسس والنطاق وقذف الأيردمب الموجه للكتابة حياً"""
-        path = f"/home/kali/AeroCage-X/storage/recon/{ap_name}/{band}/CH_{channel}"
-        os.makedirs(path, exist_ok=True)
-        csv_prefix = os.path.join(path, "live_capture")
-        subprocess.run(f"rm -f {csv_prefix}*", shell=True)
-        subprocess.Popen(f"nohup airodump-ng --channel {channel} --write {csv_prefix} --output-format csv {socket} >/dev/null 2>&1 &", shell=True)
-        return f"{csv_prefix}-01.csv"
+# ربط النواة والحارس والمساعد الشبكي المشترك
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(BASE_DIR))
 
-    @staticmethod
-    def retry_parse_pipeline(csv_path):
-        """[مهندس التتابع الموقوت]: محاولة أولى وثانية بمهل تصاعدية لقراءة ملف الـ CSV حياً لطلبك"""
-        # المحاولة 1: انتظر مهلة أولية خفيفة ثم افحص
-        time.sleep(2.5)
-        stations, ap_map = M3KaliPipeline.raw_csv_parse(csv_path)
-        if stations: return stations, ap_map, "🚀 نجحت المحاولة الأولى (قراءة فورية طازجة)"
+from core.system_guard import SystemGuard
+from utils.network_validators import NetworkValidators
 
-        # المحاولة 2: إذا فشل، امنح الأيردمب مهلة انتظار أطول قليلاً للاستقرار العتادي
-        print("  ⏱️ [المحاولة 1 فارغة] -> جاري تمديد الانتظار العملياتي للمحاولة 2 (4 ثوانٍ إضافية)...")
-        time.sleep(4.0)
-        stations, ap_map = M3KaliPipeline.raw_csv_parse(csv_path)
-        if stations: return stations, ap_map, "🚀 نجحت المحاولة الثانية (تم التزامن عتادياً)"
+SystemGuard.enforce_root_privileges("Kali Pipeline Engine")
 
-        return [], {}, "❌ المحاولتان فارغتان: لم يتم رصد أهداف أو الأيردمب لم يبدأ الضخ بعد."
+class KaliPipelineEngine:
+    def __init__(self):
+        self.active_pipeline_processes = []
 
-    @staticmethod
-    def raw_csv_parse(csv_path):
-        """قضم وتفكيك سكاكين الـ CSV حياً بصمامات أمان حتمية لمنع الـ IndexError"""
-        if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0: return [], {}
+    def run_pipeline_step_safe(self, tool: str, args_list: list) -> str:
+        if not SystemGuard.verify_dependencies([tool]):
+            return ""
+
+        # تطهير المدخلات عتادياً وعزل الشل
+        cleaned_tool = SystemGuard.sanitize_input(tool, "interface")
+        cleaned_args = [SystemGuard.sanitize_input(arg, "csv_value") for arg in args_list]
+        
+        # خط الدفاع الاستخباراتي: فحص الأهداف الملقمة داخل الحجج عبر المساعد الموحد
+        for arg in cleaned_args:
+            # إذا احتوت الحجج على IP أو MAC، يتم التحقق الجراحي من صيغتها لمنع الاختراق العكسي
+            if "." in arg and not NetworkValidators.is_valid_ip(arg):
+                print(f"[-] تنبيه أمني حرج: تم رصد واعتراض عنوان IP ملوث في الأنبوب: {arg}")
+                return ""
+            if ":" in arg and not NetworkValidators.is_valid_bssid(arg):
+                print(f"[-] تنبيه أمني حرج: تم رصد واعتراض عنوان MAC ملوث في الأنبوب: {arg}")
+                return ""
+
+        full_command = [cleaned_tool] + cleaned_args
         try:
-            with open(csv_path, "r", encoding="utf-8", errors="ignore") as f: content = f.read()
-            sections = content.split("\n\n")
-            if len(sections) < 2 or "Station MAC" not in content: return [], {}
+            print(f"[*] جاري تنفيذ خطوة الأنبوب الآمنة والمصفاة سيبرانياً: {' '.join(full_command)}")
+            process = subprocess.Popen(
+                full_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                shell=False # مغلق تماماً وفق معايير Bandit الفولاذية
+            )
+            self.active_pipeline_processes.append(process)
+            stdout, stderr = process.communicate()
             
-            ap_map = {}
-            for r in csv.reader(sections[0].strip().split("\n")):
-                if r and len(r) >= 14 and not r[0].startswith("BSSID"): ap_map[r[0].strip().upper()] = r[13].strip()
-                
-            stations = []
-            for r in csv.reader(sections[1].strip().split("\n")):
-                if not r or len(r) < 6 or r[0].startswith("Station MAC"): continue
-                if r[5].strip().upper() in ap_map:
-                    stations.append({"client": r[0].strip().upper(), "bssid": r[5].strip().upper(), "ssid": ap_map[r[5].strip().upper()], "power": r[3]})
-            return stations, ap_map
-        except Exception: return [], {}
+            if process.returncode == 0:
+                print(f"[+] نجحت خطوة الأنبوب للأداة المحمية {cleaned_tool}.")
+                return stdout.strip()
+            else:
+                print(f"[-] تنبيه: فشل تنفيذ الأداة {cleaned_tool}. مخرجات الخطأ: {stderr.strip()}")
+                return ""
+        except Exception as e:
+            print(f"[-] عطل غير متوقع أثناء تشغيل الـ Pipeline المركزي: {e}")
+            return ""
+
+if __name__ == "__main__":
+    print("[*] محرك الأنابيب لـ كالي مدمج ومطهر كلياً من الأكواد والوظائف الفرعية المكررة.")

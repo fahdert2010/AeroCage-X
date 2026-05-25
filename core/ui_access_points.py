@@ -1,80 +1,107 @@
 #!/usr/bin/env python3
-import getpass
-from core.ui_base import UIBase, G_OK, R_ERR, Y_WARN, D_DIV, W_TEXT, RESET
+import os
+import sys
+import tkinter as tk
+from tkinter import messagebox, ttk
+import threading
+from pathlib import Path
 
-class UIAccessPoints:
-    @staticmethod
-    def manage(db):
-        while True:
-            UIBase.show_header("لوحة التحكم وإدارة أجهزة الأكسس بوينت")
-            aps = db.get_all_access_points()
-            if aps:
-                print(f" {W_TEXT}{'رقم':<4} | {'اسم الجهاز':<20} | {'عنوان IP':<15} | {'المجموعة المنتمية لها'}{RESET}")
-                print(f"{D_DIV} ─────────────────────────────────────────────────────────────────────────{RESET}")
-                for idx, (ap_id, ap_name, ap_ip, ap_user, ap_pass, g_name) in enumerate(aps):
-                    print(f" [{idx+1:<2}] | {ap_name:<20} | {ap_ip:<15} | {g_name if g_name else 'بدون مجموعة'}")
-            else:
-                print(f" ⚠️ {Y_WARN}لا توجد أي أجهزة مسجلة حالياً في قاعدة البيانات.{RESET}")
-                
-            print(f"{D_DIV}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-            print(f" [{G_OK}1{RESET}] إدخال وحقن أكسس بوينت جديد")
-            print(f" [{R_ERR}2{RESET}] مسح وإلغاء جهاز أكسس من النظام")
-            print(f" [{Y_WARN}3{RESET}] التعديل التكتيكي لمعطيات وكلمة سر أكسس مسجل")
-            print(f" [{D_DIV}0{RESET}] العودة إلى القائمة الكبرى")
-            print(f"{D_DIV}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
+# ربط المسارات بالنواة المركزية
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(BASE_DIR))
+
+from core.system_guard import SystemGuard
+from core.ui_base import AeroCageUIBase
+from core.db_manager import DatabaseManager
+
+class AeroCageAccessPointsGUI(AeroCageUIBase):
+    def __init__(self, root: tk.Tk):
+        super().__init__(root, title="إدارة وتتبع نقاط الوصول اللاسلكية", width=800, height=520)
+        
+        self.db_manager = DatabaseManager()
+        self.build_ap_interface()
+        self.refresh_ap_list_async()
+
+    def build_ap_interface(self):
+        lbl_header = tk.Label(self.root, text="لوحة إدارة وتحليل نقاط الوصول اللاسلكية المكتشفة", font=("Courier", 12, "bold"))
+        self.apply_cyber_theme(lbl_header, "label")
+        lbl_header.pack(pady=10)
+
+        control_frame = tk.Frame(self.root)
+        self.apply_cyber_theme(control_frame, "frame")
+        control_frame.pack(pady=5, fill=tk.X, padx=20)
+
+        self.btn_refresh = tk.Button(control_frame, text="🔄 تحديث طابور النقاط", command=self.refresh_ap_list_async)
+        self.apply_cyber_theme(self.btn_refresh, "button")
+        self.btn_refresh.pack(side=tk.LEFT, padx=5)
+
+        self.btn_inject_target = tk.Button(control_frame, text="🎯 تلقيم الهدف للموجه", command=self.inject_selected_ap_to_strike)
+        self.apply_cyber_theme(self.btn_inject_target, "button", alert_style=True)
+        self.btn_inject_target.pack(side=tk.RIGHT, padx=5)
+
+        table_frame = tk.Frame(self.root)
+        self.apply_cyber_theme(table_frame, "frame")
+        table_frame.pack(pady=10, fill=tk.BOTH, expand=True, padx=20)
+
+        self.tree = ttk.Treeview(table_frame, columns=("BSSID", "ESSID", "Channel", "Power", "LastSeen"), show="headings")
+        self.tree.heading("BSSID", text="BSSID / MAC Address")
+        self.tree.heading("ESSID", text="ESSID / Wi-Fi Name")
+        self.tree.heading("Channel", text="القناة")
+        self.tree.heading("Power", text="قوة الإشارة (Signal)")
+        self.tree.heading("LastSeen", text="آخر رصد تكتيكي")
+        
+        for col in ("BSSID", "ESSID", "Channel", "Power", "LastSeen"):
+            self.tree.column(col, anchor=tk.CENTER)
+
+        # استدعاء دالة حقن ثيم الجدول الموحد من الأبui_base كود أنظف وموفر للمساحة
+        self.configure_treeview_style(self.tree)
+        self.tree.pack(fill=tk.BOTH, expand=True)
+
+        self.status_var = tk.StringVar(value="الحالة: جاهز بانتظار قراءة نقاط البث...")
+        lbl_status = tk.Label(self.root, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W, font=("Arial", 9, "italic"), fg=self.fg_primary, bg=self.bg_entry)
+        lbl_status.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def refresh_ap_list_async(self):
+        self.status_var.set("الحالة: جاري جلب وتحديث سجلات نقاط البث من قاعدة البيانات...")
+        self.btn_refresh.config(state=tk.DISABLED)
+        threading.Thread(target=self._fetch_ap_worker, daemon=True).start()
+
+    def _fetch_ap_worker(self):
+        try:
+            # استدعاء دالة التجميع لمسح وتنظيف الجدول بأمان من الأب ui_base
+            self.root.after(0, lambda: self.clear_treeview_records(self.tree))
             
-            opt = input("🔢 الاختيار: ").strip()
-            if opt in ["0", ""]: break
-            elif opt == "1":
-                UIBase.show_header("حقن وتسجيل أكسس بوينت جديد (اكتب 0 للتراجع)")
-                name = UIBase.input_guard("📝 اسم الأكسس: ", "text", db, "ap_name")
-                if name == "0": continue
-                ip = UIBase.input_guard("🌐 عنوان الـ IP: ", "ip", db, "ap_ip")
-                if ip == "0": continue
-                username = input("👤 اسم المستخدم [الافتراضي root]: ").strip()
-                if not username: username = "root"
-                password = getpass.getpass("🔒 كلمة سر الـ SSH (مخفية صامتاً): ").strip()
+            targets = self.db_manager.get_all_active_targets()
+            rendered_count = 0
+            for target in targets:
+                bssid = target.get("bssid", "غير معروف")
+                essid = target.get("essid", "مخفي")
+                channel = target.get("channel", "1")
+                power = target.get("power", -100)
+                last_seen = target.get("last_seen", "غير محدد")
                 
-                groups = db.get_all_groups()
-                g_id = None
-                if groups:
-                    print(f"\n{Y_WARN}[ المجموعات المتاحة ]{RESET}")
-                    for idx_g, g_id_val, g_name in zip(range(len(groups)), [g[0] for g in groups], [g[1] for g in groups]):
-                        print(f"  [{idx_g+1}] {g_name}")
-                    g_opt = input("🔢 رقم المجموعة لربط الجهاز بها (اضغط Enter لتخطيه): ").strip()
-                    if g_opt.isdigit() and int(g_opt) <= len(groups): g_id = groups[int(g_opt)-1][0]
+                self.root.after(0, self._append_row_to_tree, bssid, essid, channel, f"{power} dBm", last_seen)
+                rendered_count += 1
 
-                db.add_access_point(name, ip, username, password, group_id=g_id)
-                print(f"\n{G_OK}🟢 تم تسجيل وحفظ جهاز الأكسس بنجاح وآمن من التكرار.{RESET}")
-                UIBase.return_prompt()
-            elif opt == "2":
-                if not aps: continue
-                idx = input("🔢 أدخل رقم السطر للجهاز المراد حذفه: ").strip()
-                if idx.isdigit() and int(idx) <= len(aps):
-                    db.delete_access_point(aps[int(idx)-1][0])
-                    print(f"\n{G_OK}🟢 تم مسح الجهاز بنجاح من قاعدة البيانات.{RESET}")
-                UIBase.return_prompt()
-            elif opt == "3":
-                if not aps: continue
-                idx = input("🔢 أدخل رقم السطر للجهاز المراد تعديل معطياته: ").strip()
-                if not idx.isdigit() or int(idx) > len(aps): continue
-                target_ap = aps[int(idx)-1]
-                ap_id = target_ap[0]
-                
-                UIBase.show_header(f"تعديل الأكسس بوينت [{target_ap[1]}] (اضغط Enter للحفاظ على القديم)")
-                new_name = input(f"📝 الاسم الحالي ({target_ap[1]}) -> الجديد: ").strip()
-                if not new_name: new_name = target_ap[1]
-                new_ip = input(f"🌐 الـ IP الحالي ({target_ap[2]}) -> الجديد: ").strip()
-                if not new_ip: new_ip = target_ap[2]
-                if not UIBase.is_valid_ip(new_ip): print(f"{R_ERR}❌ IP غير صالح{RESET}"); time.sleep(1); continue
-                new_user = input(f"👤 اليوزر الحالي ({target_ap[3]}) -> الجديد: ").strip()
-                if not new_user: new_user = target_ap[3]
-                new_pass = getpass.getpass("🔒 كلمة السر الجديدة (اتركها فارغة للحفاظ على القديمة): ").strip()
-                if not new_pass: new_pass = target_ap[4]
-                
-                # تحديث الخانات صامتاً بالنواة وقفل التكرار لطلبك
-                with db._get_connection() as conn:
-                    conn.execute("UPDATE access_points SET name=?, ip=?, username=?, password=? WHERE id=?;", (new_name, new_ip, new_user, new_pass, ap_id))
-                    conn.commit()
-                print(f"\n{G_OK}🟢 تم تعديل وحفظ بيانات الأكسس بوينت عتادياً بنجاح وبأعلى حماية.{RESET}")
-                UIBase.return_prompt()
+            self.root.after(0, lambda: self.status_var.set(f"الحالة: تم تحميل {rendered_count} نقطة بث لاسلكية بنجاح."))
+        except Exception as e:
+            self.root.after(0, lambda: self.status_var.set(f"🔴 خطأ جلب نقاط البث: {e}"))
+        finally:
+            self.root.after(0, lambda: self.btn_refresh.config(state=tk.NORMAL))
+
+    def _append_row_to_tree(self, bssid, essid, channel, power, last_seen):
+        self.tree.insert("", tk.END, values=(bssid, essid, channel, power, last_seen))
+
+    def inject_selected_ap_to_strike(self):
+        selected_item = self.tree.selection()
+        if not selected_item:
+            messagebox.showwarning("تنبيه تكتيكي", "الرجاء اختيار نقطة بث من الجدول أولاً لتلقيمها!")
+            return
+        item_values = self.tree.item(selected_item, "values")
+        messagebox.showinfo("تم التلقيم بنجاح", f"تم تثبيت الهدف المختار في المنظومة:\n\nالاسم: {item_values[1]}\nالماك: {item_values[0]}")
+
+if __name__ == "__main__":
+    SystemGuard.enforce_root_privileges("واجهة النقاط")
+    root = tk.Tk()
+    app = AeroCageAccessPointsGUI(root)
+    root.mainloop()

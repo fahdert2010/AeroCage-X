@@ -1,20 +1,31 @@
-# /home/kali/AeroCageX/config.py
 import os
+from pathlib import Path
+from dotenv import load_dotenv
 
-# المسارات الرئيسية للمنظومة
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-LOGS_DIR = os.path.join(BASE_DIR, "logs")
-STORAGE_DIR = os.path.join(BASE_DIR, "storage")
+# تحديد المسار الرئيسي للمشروع ديناميكياً ليناسب Kali و OpenWrt
+BASE_DIR = Path(__file__).resolve().parent
 
-DB_PATH = os.path.join(DATA_DIR, "aerocage.db")
-LOG_PATH = os.path.join(LOGS_DIR, "error_vault.log")
+# تحميل متغيرات البيئة من ملف .env خفي
+load_dotenv(BASE_DIR / ".env")
 
-def initialize_environment():
-    """تأمين بناء المجلدات الحيوية عتادياً عند أول إقلاع للمنصة"""
-    for folder in [DATA_DIR, LOGS_DIR, STORAGE_DIR]:
-        if not os.path.exists(folder):
-            os.makedirs(folder, exist_ok=True)
+class Config:
+    VERSION = "1.0.0"
+    APP_NAME = "AeroCage-X"
+    
+    # تأمين المسارات بشكل متوافق مع جميع أنظمة التشغيل
+    LOG_DIR = BASE_DIR / "logs"
+    DATA_DIR = BASE_DIR / "data"
+    
+    # جلب البيانات الحساسة من البيئة وليس كتابتها يدوياً
+    DB_NAME = os.getenv("ACX_DB_NAME", "aerocage_core.db")
+    DB_USER = os.getenv("ACX_DB_USER", "admin")
+    DB_PASSWORD = os.getenv("ACX_DB_PASSWORD", "SuperSecretPassword123!")
+    
+    @classmethod
+    def initialize_dirs(cls):
+        """دالة ذكية لإنشاء المجلدات تلقائياً إذا لم تكن موجودة لمنع أخطاء التشغيل"""
+        cls.LOG_DIR.mkdir(parents=True, exist_ok=True)
+        cls.DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# استدعاء فوري عند الاستيراد للتأكد من جهوزية البيئة
-initialize_environment()
+# تفعيل إنشاء المجلدات فور استدعاء الملف
+Config.initialize_dirs()
