@@ -1,4 +1,3 @@
-cat << 'EOF' > /home/kali/AeroCage-XV1.0.1/utils/tunnel_watchdog.py
 #!/usr/bin/env python3
 """
 File Name: tunnel_watchdog.py
@@ -113,5 +112,4 @@ class TunnelWatchdog:
 
 if __name__ == "__main__":
     print("[+] Ultimate Tunnel Watchdog Engine Upgraded 1000%.")
-EOF
-chmod +x /home/kali/AeroCage-XV1.0.1/utils/tunnel_watchdog.py
+  
